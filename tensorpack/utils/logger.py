@@ -53,11 +53,13 @@ def get_time_str():
 
 
 # logger file and directory:
-global LOG_FILE, LOG_DIR
+global LOG_DIR, _FILE_HANDLER
 LOG_DIR = None
+_FILE_HANDLER = None
 
 
 def _set_file(path):
+    global _FILE_HANDLER
     if os.path.isfile(path):
         backup_name = path + '.' + get_time_str()
         shutil.move(path, backup_name)
@@ -65,6 +67,8 @@ def _set_file(path):
     hdl = logging.FileHandler(
         filename=path, encoding='utf-8', mode='w')
     hdl.setFormatter(_MyFormatter(datefmt='%m%d %H:%M:%S'))
+
+    _FILE_HANDLER = hdl
     _logger.addHandler(hdl)
     _logger.info("Argv: " + ' '.join(sys.argv))
 
@@ -75,16 +79,20 @@ def set_logger_dir(dirname, action=None):
 
     Args:
         dirname(str): log directory
-        action(str): an action of ("k","b","d","n") to be performed. Will ask user by default.
+        action(str): an action of ("k","b","d","n","q") to be performed. Will ask user by default.
     """
-    global LOG_FILE, LOG_DIR
+    global LOG_DIR, _FILE_HANDLER
+    if _FILE_HANDLER:
+        # unload and close the old file handler, so that we may safely delete the logger directory
+        _logger.removeHandler(_FILE_HANDLER)
+        del _FILE_HANDLER
     if os.path.isdir(dirname):
         if not action:
             _logger.warn("""\
-Directory {} exists! Please either backup/delete it, or use a new directory.""".format(dirname))
+Log directory {} exists! Please either backup/delete it, or use a new directory.""".format(dirname))
             _logger.warn("""\
 If you're resuming from a previous run you can choose to keep it.""")
-            _logger.info("Select Action: k (keep) / b (backup) / d (delete) / n (new):")
+            _logger.info("Select Action: k (keep) / b (backup) / d (delete) / n (new) / q (quit):")
         while not action:
             action = input().lower().strip()
         act = action
@@ -99,13 +107,14 @@ If you're resuming from a previous run you can choose to keep it.""")
             info("Use a new log directory {}".format(dirname))  # noqa: F821
         elif act == 'k':
             pass
+        elif act == 'q':
+            sys.exit()
         else:
             raise ValueError("Unknown action: {}".format(act))
     LOG_DIR = dirname
     from .fs import mkdir_p
     mkdir_p(dirname)
-    LOG_FILE = os.path.join(dirname, 'log.log')
-    _set_file(LOG_FILE)
+    _set_file(os.path.join(dirname, 'log.log'))
 
 
 def disable_logger():
@@ -114,13 +123,10 @@ def disable_logger():
         globals()[func] = lambda x: None
 
 
-def auto_set_dir(action=None, overwrite=False):
+def auto_set_dir(action=None):
     """
     Set log directory to a subdir inside "train_log", with the name being
     the main python file currently running"""
-    if LOG_DIR is not None and not overwrite:
-        # dir already set
-        return
     mod = sys.modules['__main__']
     basename = os.path.basename(mod.__file__)
     set_logger_dir(

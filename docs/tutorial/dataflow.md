@@ -1,7 +1,7 @@
 
 # DataFlow
 
-DataFlow is a library to help you build Python iterators to load data.
+DataFlow is a library to easily build Python iterators for efficient data loading.
 
 A DataFlow has a `get_data()` generator method,
 which yields `datapoints`.
@@ -13,14 +13,14 @@ a numpy array of shape (64, 28, 28), and an array of shape (64,).
 
 ### Composition of DataFlow
 One good thing about having a standard interface is to be able to provide
-the greatest code reusablility.
-There are a lot of existing modules in tensorpack which you can use to compose
-complex DataFlow instances with a long pre-processing pipeline. A whole pipeline usually
+the greatest code reusability.
+There are a lot of existing modules in tensorpack, which you can use to compose
+complex DataFlow with a long pre-processing pipeline. A whole pipeline usually
 would __read from disk (or other sources), apply augmentations, group into batches,
 prefetch data__, etc. A simple example is as the following:
 
 ````python
-# a DataFlow you implement to produce [image,label] pairs from whatever sources:
+# a DataFlow you implement to produce [tensor1, tensor2, ..] lists from whatever sources:
 df = MyDataFlow(shuffle=True)
 # resize the image component of each datapoint
 df = AugmentImageComponent(df, [imgaug.Resize((225, 225))])
@@ -35,10 +35,8 @@ with all the data preprocessing.
 All these modules are written in Python,
 so you can easily implement whatever operations/transformations you need,
 without worrying about adding operators to TensorFlow.
-In the mean time, thanks to the prefetching, it can still run fast enough for
-tasks as large as ImageNet training.
 
-Unless you're working with standard data types (image folders, LMDB, etc),
+Unless you are working with standard data types (image folders, LMDB, etc),
 you would usually want to write your own DataFlow.
 See [another tutorial](http://tensorpack.readthedocs.io/en/latest/tutorial/extend/dataflow.html)
 for details.
@@ -48,11 +46,10 @@ for details.
 	 -->
 
 ### Use DataFlow outside Tensorpack
-Another good thing about DataFlow is that it is independent of
-tensorpack internals. You can just use it as an efficient data processing pipeline,
-and plug it into other frameworks.
+DataFlow is independent of both tensorpack and TensorFlow.
+You can simply use it as a data processing pipeline and plug it into any other frameworks.
 
-To use a DataFlow independently, you'll need to call `reset_state()` first to initialize it,
+To use a DataFlow independently, you will need to call `reset_state()` first to initialize it,
 and then use the generator however you want:
 ```python
 df = SomeDataFlow()

@@ -4,22 +4,17 @@
 # Author: Yuxin Wu <ppwwyyxx@gmail.com>
 
 import tensorflow as tf
+from tensorflow.python.training import training_util
 from six.moves import map
-
-from ..utils.naming import (
-    GLOBAL_STEP_VAR_NAME,
-    GLOBAL_STEP_OP_NAME)
-from ..utils.argtools import memoized
+from ..utils.argtools import graph_memoized
 
 __all__ = ['get_default_sess_config',
-
            'get_global_step_value',
            'get_global_step_var',
-           #'get_local_step_var',
-
            'get_op_tensor_name',
            'get_tensors_by_names',
            'get_op_or_tensor_by_name',
+           'get_tf_version_number',
            ]
 
 
@@ -52,25 +47,26 @@ def get_default_sess_config(mem_fraction=0.99):
     return conf
 
 
-@memoized
+@graph_memoized
 def get_global_step_var():
     """
     Returns:
         tf.Tensor: the global_step variable in the current graph. create if
         doesn't exist.
     """
-    try:
-        return tf.get_default_graph().get_tensor_by_name(GLOBAL_STEP_VAR_NAME)
-    except KeyError:
-        scope = tf.get_variable_scope()
-        assert scope.name == '', \
-            "The global_step variable should be created under the root variable scope!"
-        with tf.variable_scope(scope, reuse=False), \
-                tf.name_scope(None):
-            var = tf.get_variable(GLOBAL_STEP_OP_NAME,
-                                  initializer=tf.constant(0, dtype=tf.int64),
-                                  trainable=False, dtype=tf.int64)
-        return var
+    scope = tf.get_variable_scope()
+    assert scope.name == '', \
+        "The global_step variable should be created under the root variable scope!"
+    assert not scope.reuse, \
+        "The global_step variable shouldn't be called under a reuse variable scope!"
+    if get_tf_version_number() <= 1.0:
+        var = tf.get_variable('global_step',
+                              initializer=tf.constant(0, dtype=tf.int64),
+                              trainable=False, dtype=tf.int64)
+        tf.add_to_collection(tf.GraphKeys.GLOBAL_STEP, var)
+    else:
+        var = training_util.get_or_create_global_step()
+    return var
 
 
 def get_global_step_value():
@@ -142,3 +138,10 @@ def get_op_or_tensor_by_name(name):
         return f(name)
     else:
         return list(map(f, name))
+
+
+def get_tf_version_number():
+    """
+    Return a float (for comparison), indicating tensorflow version.
+    """
+    return float('.'.join(tf.VERSION.split('.')[:2]))

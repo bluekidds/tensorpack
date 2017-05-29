@@ -9,7 +9,7 @@ from tensorflow.python.training import moving_averages
 
 from ..tfutils.tower import get_current_tower_context
 from ..utils import logger
-from .common import layer_register
+from .common import layer_register, VariableHolder
 
 __all__ = ['BatchNorm', 'BatchRenorm']
 
@@ -126,8 +126,12 @@ def update_bn_ema(xn, batch_mean, batch_var, moving_mean, moving_var, decay):
     add_model_variable(moving_var)
 
     # seems faster than delayed update, but might behave otherwise in distributed settings.
-    with tf.control_dependencies([update_op1, update_op2]):
-        return tf.identity(xn, name='output')
+    # TODO add an option, and maybe enable it for replica mode?
+    # with tf.control_dependencies([update_op1, update_op2]):
+    # return tf.identity(xn, name='output')
+    tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, update_op1)
+    tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, update_op2)
+    return xn
 
 
 def reshape_for_bn(param, ndims, chan, data_format):
@@ -219,13 +223,19 @@ def BatchNorm(x, use_local_stat=None, decay=0.9, epsilon=1e-5,
                 x, moving_mean, moving_var, beta, gamma, epsilon)
 
     # maintain EMA only on one GPU.
-    if ctx.is_main_training_tower:
-        return update_bn_ema(xn, batch_mean, batch_var, moving_mean, moving_var, decay)
+    if ctx.is_main_training_tower or ctx.has_own_variables:
+        ret = update_bn_ema(xn, batch_mean, batch_var, moving_mean, moving_var, decay)
     else:
-        return tf.identity(xn, name='output')
+        ret = tf.identity(xn, name='output')
+
+    vh = ret.variables = VariableHolder(mean=moving_mean, variance=moving_var)
+    if use_scale:
+        vh.gamma = gamma
+    if use_bias:
+        vh.beta = beta
+    return ret
 
 
-# TODO support NCHW
 @layer_register(log_shape=False)
 def BatchRenorm(x, rmax, dmax, decay=0.9, epsilon=1e-5,
                 use_scale=True, use_bias=True, data_format='NHWC'):
@@ -301,6 +311,13 @@ def BatchRenorm(x, rmax, dmax, decay=0.9, epsilon=1e-5,
                 x, moving_mean, moving_var, beta, gamma, epsilon)
 
     if ctx.is_main_training_tower:
-        return update_bn_ema(xn, batch_mean, batch_var, moving_mean, moving_var, decay)
+        ret = update_bn_ema(xn, batch_mean, batch_var, moving_mean, moving_var, decay)
     else:
-        return tf.identity(xn, name='output')
+        ret = tf.identity(xn, name='output')
+
+    vh = ret.variables = VariableHolder(mean=moving_mean, variance=moving_var)
+    if use_scale:
+        vh.gamma = gamma
+    if use_bias:
+        vh.beta = beta
+    return ret

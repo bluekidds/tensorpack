@@ -6,18 +6,17 @@
 import numpy as np
 import os
 import sys
-import re
 import time
 import random
 import uuid
 import argparse
 import multiprocessing
 import threading
+
 import cv2
-from collections import deque
+import tensorflow as tf
 import six
 from six.moves import queue
-import tensorflow as tf
 
 from tensorpack import *
 from tensorpack.utils.concurrency import *
@@ -29,7 +28,14 @@ from tensorpack.tfutils.gradproc import MapGradient, SummaryGradient
 from tensorpack.RL import *
 from simulator import *
 import common
-from common import (play_model, Evaluator, eval_model_multithread)
+from common import (play_model, Evaluator, eval_model_multithread,
+                    play_one_episode, play_n_episodes)
+
+if six.PY3:
+    from concurrent import futures
+    CancelledError = futures.CancelledError
+else:
+    CancelledError = Exception
 
 IMAGE_SIZE = (84, 84)
 FRAME_HISTORY = 4
@@ -41,8 +47,9 @@ LOCAL_TIME_MAX = 5
 STEPS_PER_EPOCH = 6000
 EVAL_EPISODE = 50
 BATCH_SIZE = 128
+PREDICT_BATCH_SIZE = 15     # batch for efficient forward
 SIMULATOR_PROC = 50
-PREDICTOR_THREAD_PER_GPU = 2
+PREDICTOR_THREAD_PER_GPU = 3
 PREDICTOR_THREAD = None
 EVALUATE_PROC = min(multiprocessing.cpu_count() // 2, 20)
 
@@ -51,11 +58,8 @@ ENV_NAME = None
 
 
 def get_player(viz=False, train=False, dumpdir=None):
-    pl = GymEnv(ENV_NAME, dumpdir=dumpdir)
-
-    def func(img):
-        return cv2.resize(img, IMAGE_SIZE[::-1])
-    pl = MapPlayerState(pl, func)
+    pl = GymEnv(ENV_NAME, viz=viz, dumpdir=dumpdir)
+    pl = MapPlayerState(pl, lambda img: cv2.resize(img, IMAGE_SIZE[::-1]))
 
     global NUM_ACTIONS
     NUM_ACTIONS = pl.get_action_space().num_actions()
@@ -63,15 +67,12 @@ def get_player(viz=False, train=False, dumpdir=None):
     pl = HistoryFramePlayer(pl, FRAME_HISTORY)
     if not train:
         pl = PreventStuckPlayer(pl, 30, 1)
-    pl = LimitLengthPlayer(pl, 40000)
+    else:
+        pl = LimitLengthPlayer(pl, 40000)
     return pl
 
 
-common.get_player = get_player
-
-
 class MySimulatorWorker(SimulatorProcess):
-
     def _build_player(self):
         return get_player(train=True)
 
@@ -79,12 +80,12 @@ class MySimulatorWorker(SimulatorProcess):
 class Model(ModelDesc):
     def _get_inputs(self):
         assert NUM_ACTIONS is not None
-        return [InputDesc(tf.float32, (None,) + IMAGE_SHAPE3, 'state'),
+        return [InputDesc(tf.uint8, (None,) + IMAGE_SHAPE3, 'state'),
                 InputDesc(tf.int64, (None,), 'action'),
                 InputDesc(tf.float32, (None,), 'futurereward')]
 
     def _get_NN_prediction(self, image):
-        image = image / 255.0
+        image = tf.cast(image, tf.float32) / 255.0
         with argscope(Conv2D, nl=tf.nn.relu):
             l = Conv2D('conv0', image, out_channel=32, kernel_shape=5)
             l = MaxPooling('pool0', l, 2)
@@ -152,14 +153,18 @@ class MySimulatorMaster(SimulatorMaster, Callback):
     def _setup_graph(self):
         self.async_predictor = MultiThreadAsyncPredictor(
             self.trainer.get_predictors(['state'], ['policy_explore', 'pred_value'],
-                                        PREDICTOR_THREAD), batch_size=15)
+                                        PREDICTOR_THREAD), batch_size=PREDICT_BATCH_SIZE)
 
     def _before_train(self):
         self.async_predictor.start()
 
     def _on_state(self, state, ident):
         def cb(outputs):
-            distrib, value = outputs.result()
+            try:
+                distrib, value = outputs.result()
+            except CancelledError:
+                logger.info("Client {} cancelled.".format(ident))
+                return
             assert np.all(np.isfinite(distrib)), distrib
             action = np.random.choice(len(distrib), p=distrib)
             client = self.clients[ident]
@@ -211,20 +216,24 @@ def get_config():
     master = MySimulatorMaster(namec2s, names2c, M)
     dataflow = BatchData(DataFromQueue(master.queue), BATCH_SIZE)
     return TrainConfig(
+        model=M,
         dataflow=dataflow,
         callbacks=[
             ModelSaver(),
-            ScheduledHyperParamSetter('learning_rate', [(80, 0.0003), (120, 0.0001)]),
+            ScheduledHyperParamSetter('learning_rate', [(20, 0.0003), (120, 0.0001)]),
             ScheduledHyperParamSetter('entropy_beta', [(80, 0.005)]),
             ScheduledHyperParamSetter('explore_factor',
                                       [(80, 2), (100, 3), (120, 4), (140, 5)]),
+            HumanHyperParamSetter('learning_rate'),
+            HumanHyperParamSetter('entropy_beta'),
             master,
             StartProcOrThread(master),
-            PeriodicTrigger(Evaluator(EVAL_EPISODE, ['state'], ['policy']), every_k_epochs=2),
+            PeriodicTrigger(Evaluator(
+                EVAL_EPISODE, ['state'], ['policy'], get_player),
+                every_k_epochs=3),
         ],
         session_creator=sesscreate.NewSessionCreator(
             config=get_default_sess_config(0.5)),
-        model=M,
         steps_per_epoch=STEPS_PER_EPOCH,
         max_epoch=1000,
     )
@@ -236,11 +245,14 @@ if __name__ == '__main__':
     parser.add_argument('--load', help='load model')
     parser.add_argument('--env', help='env', required=True)
     parser.add_argument('--task', help='task to perform',
-                        choices=['play', 'eval', 'train'], default='train')
+                        choices=['play', 'eval', 'train', 'gen_submit'], default='train')
+    parser.add_argument('--output', help='output directory for submission', default='output_dir')
+    parser.add_argument('--episode', help='number of episode to eval', default=100, type=int)
     args = parser.parse_args()
 
     ENV_NAME = args.env
     assert ENV_NAME
+    logger.info("Environment Name: {}".format(ENV_NAME))
     p = get_player()
     del p    # set NUM_ACTIONS
 
@@ -252,13 +264,18 @@ if __name__ == '__main__':
     if args.task != 'train':
         cfg = PredictConfig(
             model=Model(),
-            session_init=SaverRestore(args.load),
+            session_init=get_model_loader(args.load),
             input_names=['state'],
             output_names=['policy'])
         if args.task == 'play':
-            play_model(cfg)
+            play_model(cfg, get_player(viz=0.01))
         elif args.task == 'eval':
-            eval_model_multithread(cfg, EVAL_EPISODE)
+            eval_model_multithread(cfg, args.episode, get_player)
+        elif args.task == 'gen_submit':
+            play_n_episodes(
+                get_player(train=False, dumpdir=args.output),
+                OfflinePredictor(cfg), args.episode)
+            # gym.upload(output, api_key='xxx')
     else:
         nr_gpu = get_nr_gpu()
         if nr_gpu > 0:
@@ -279,7 +296,7 @@ if __name__ == '__main__':
             trainer = QueueInputTrainer
         config = get_config()
         if args.load:
-            config.session_init = SaverRestore(args.load)
+            config.session_init = get_model_loader(args.load)
         config.tower = train_tower
         config.predict_tower = predict_tower
         trainer(config).train()

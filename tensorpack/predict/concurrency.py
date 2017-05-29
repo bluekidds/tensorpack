@@ -99,9 +99,9 @@ class PredictorWorkerThread(StoppableThread, ShareSessionThread):
                 #         self.id, len(futures), self.queue.qsize())
                 #  debug, for speed testing
                 # if not hasattr(self, 'xxx'):
-                #     self.xxx = outputs = self.func(batched)
+                    # self.xxx = outputs = self.func(batched)
                 # else:
-                #     outputs = [[self.xxx[0][0]] * len(batched[0]), [self.xxx[1][0]] * len(batched[0])]
+                    # outputs = [[self.xxx[0][0]] * len(batched[0]), [self.xxx[1][0]] * len(batched[0])]
 
                 for idx, f in enumerate(futures):
                     f.set_result([k[idx] for k in outputs])
@@ -155,6 +155,7 @@ class MultiThreadAsyncPredictor(AsyncPredictorBase):
             # TODO XXX set logging here to avoid affecting TF logging
             import tornado.options as options
             options.parse_command_line(['--logging=debug'])
+            logger.warn("MultiThreadAsyncPredictor is inefficient in Python 2! Switch to Python 3 instead.")
 
     def start(self):
         if self._need_default_sess:

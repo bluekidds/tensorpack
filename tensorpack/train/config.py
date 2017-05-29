@@ -2,12 +2,10 @@
 # File: config.py
 # Author: Yuxin Wu <ppwwyyxxc@gmail.com>
 
-import tensorflow as tf
-
 from ..callbacks import (
     Callbacks, MovingAverageSummary,
     ProgressBar, MergeAllSummaries,
-    TFSummaryWriter, JSONWriter, ScalarPrinter)
+    TFSummaryWriter, JSONWriter, ScalarPrinter, RunUpdateOps)
 from ..dataflow.base import DataFlow
 from ..models import ModelDesc
 from ..utils import logger
@@ -15,8 +13,7 @@ from ..utils.develop import log_deprecated
 from ..tfutils import (JustCurrentSession,
                        get_default_sess_config, SessionInit)
 from ..tfutils.sesscreate import NewSessionCreator
-from ..tfutils.optimizer import apply_grad_processors
-from .input_data import InputData
+from .input_source import InputSource
 
 __all__ = ['TrainConfig']
 
@@ -38,13 +35,13 @@ class TrainConfig(object):
         """
         Args:
             dataflow (DataFlow): the dataflow to train.
-            data (InputData): an `InputData` instance. Only one of ``dataflow``
+            data (InputSource): an `InputSource` instance. Only one of ``dataflow``
                 or ``data`` has to be present.
             model (ModelDesc): the model to train.
             callbacks (list): a list of :class:`Callback` to perform during training.
             extra_callbacks (list): the same as ``callbacks``. This argument
                 is only used to provide the defaults. The defaults are
-                ``[MovingAverageSummary(), ProgressBar(), MergeAllSummaries(), LoadEpochNum()]``. The list of
+                ``[MovingAverageSummary(), ProgressBar(), MergeAllSummaries(), RunUpdateOps()]``. The list of
                 callbacks that will be used in the end are ``callbacks + extra_callbacks``.
             monitors (list): a list of :class:`TrainingMonitor`.
                 Defaults to ``[TFSummaryWriter(), JSONWriter(), ScalarPrinter()]``.
@@ -78,7 +75,7 @@ class TrainConfig(object):
             self.data = None
         else:
             self.data = data
-            assert_type(self.data, InputData)
+            assert_type(self.data, InputSource)
             self.dataflow = None
 
         if callbacks is None:
@@ -95,7 +92,8 @@ class TrainConfig(object):
             extra_callbacks = [
                 MovingAverageSummary(),
                 ProgressBar(),
-                MergeAllSummaries()]
+                MergeAllSummaries(),
+                RunUpdateOps()]
         self._callbacks = callbacks + extra_callbacks
         assert_type(self._callbacks, list)
 
@@ -153,15 +151,9 @@ class TrainConfig(object):
         assert len(set(self.predict_tower)) == len(self.predict_tower), \
             "Cannot have duplicated predict_tower!"
 
-        if 'optimizer' in kwargs:
-            log_deprecated("TrainConfig(optimizer=...)",
-                           "Use ModelDesc._get_optimizer() instead.",
-                           "2017-04-12")
-            self._optimizer = kwargs.pop('optimizer')
-            assert_type(self._optimizer, tf.train.Optimizer)
-        else:
-            self._optimizer = None
-
+        assert 'optimizer' not in kwargs, \
+            "TrainConfig(optimizer=...) was already deprecated! " \
+            "Use ModelDesc._get_optimizer() instead."
         assert len(kwargs) == 0, 'Unknown arguments: {}'.format(str(kwargs.keys()))
 
     @property
@@ -175,19 +167,3 @@ class TrainConfig(object):
     @property
     def callbacks(self):        # disable setter
         return self._callbacks
-
-    @property
-    def optimizer(self):
-        """ for back-compatibilty only. will remove in the future"""
-        if self._optimizer:
-            opt = self._optimizer
-        else:
-            opt = self.model.get_optimizer()
-        gradproc = self.model.get_gradient_processor()
-        if gradproc:
-            log_deprecated("ModelDesc.get_gradient_processor()",
-                           "Use gradient processor to build an optimizer instead.", "2017-04-12")
-            opt = apply_grad_processors(opt, gradproc)
-        if not self._optimizer:
-            self._optimizer = opt
-        return opt

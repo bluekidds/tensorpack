@@ -6,9 +6,9 @@ import tensorflow as tf
 from termcolor import colored
 from tabulate import tabulate
 
+from ..tfutils.tower import get_current_tower_context
 from ..utils import logger
 from .summary import add_moving_summary
-from .tower import get_current_tower_context
 
 __all__ = ['describe_model', 'get_shape_str', 'apply_slim_collections']
 
@@ -29,7 +29,8 @@ def describe_model():
     table = tabulate(data, headers=['name', 'shape', 'dim'])
     size_mb = total * 4 / 1024.0**2
     summary_msg = colored(
-        "\nTotal #param={} ({:.02f} MB assuming all float32)".format(total, size_mb), 'cyan')
+        "\nTotal #vars={}, #param={} ({:.02f} MB assuming all float32)".format(
+            len(data), total, size_mb), 'cyan')
     logger.info(colored("Model Parameters: \n", 'cyan') + table + summary_msg)
 
 
@@ -53,10 +54,7 @@ def get_shape_str(tensors):
 
 def apply_slim_collections(cost):
     """
-    Apply slim collections to the cost, including:
-
-    1. adding the cost with the regularizers in ``tf.GraphKeys.REGULARIZATION_LOSSES``.
-    2. make the cost depend on ``tf.GraphKeys.UPDATE_OPS``.
+    Add the cost with the regularizers in ``tf.GraphKeys.REGULARIZATION_LOSSES``.
 
     Args:
         cost: a scalar tensor
@@ -65,20 +63,11 @@ def apply_slim_collections(cost):
         a scalar tensor, the cost after applying the collections.
     """
     regulization_losses = set(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
+    ctx = get_current_tower_context()
     if len(regulization_losses) > 0:
+        assert not ctx.has_own_variables, "REGULARIZATION_LOSSES collection doesn't work in replicated mode!"
         logger.info("Applying REGULARIZATION_LOSSES on cost.")
         reg_loss = tf.add_n(list(regulization_losses), name="regularize_loss")
         cost = tf.add(reg_loss, cost, name='total_cost')
         add_moving_summary(reg_loss, cost)
-
-    # As these batch-norm statistics quickly accumulate, there is no significant loss of accuracy
-    # if only the main tower handles all batch-normalization updates, which are then shared across
-    # the towers
-    ctx = get_current_tower_context()
-    if ctx is not None and ctx.is_main_training_tower:
-        non_grad_updates = set(tf.get_collection(tf.GraphKeys.UPDATE_OPS))
-        if non_grad_updates:
-            logger.info("Applying UPDATE_OPS collection from the first tower on cost.")
-            with tf.control_dependencies(non_grad_updates):
-                cost = tf.identity(cost, name='cost_with_update')
     return cost

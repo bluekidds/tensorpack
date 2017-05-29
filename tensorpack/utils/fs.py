@@ -58,7 +58,7 @@ def download(url, dir, filename=None):
         raise
     assert size > 0, "Download an empty file!"
     # TODO human-readable size
-    print('Succesfully downloaded ' + filename + " " + str(size) + ' bytes.')
+    print('Succesfully downloaded ' + filename + ". " + str(size) + ' bytes.')
     return fpath
 
 
@@ -87,7 +87,7 @@ def get_dataset_path(*args):
         old_d = os.path.abspath(os.path.join(
             os.path.dirname(__file__), '..', 'dataflow', 'dataset'))
         old_d_ret = os.path.join(old_d, *args)
-        new_d = os.path.expanduser('~/tensorpack_data')
+        new_d = os.path.join(os.path.expanduser('~'), 'tensorpack_data')
         if os.path.isdir(old_d_ret):
             # there is an old dir containing data, use it for back-compat
             logger.warn("You seem to have old data at {}. This is no longer \

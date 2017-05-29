@@ -198,10 +198,10 @@ class FixedSizeData(ProxyDataFlow):
         cnt = 0
         while True:
             try:
-                dp = self.itr.next()
+                dp = next(self.itr)
             except StopIteration:
                 self.itr = self.ds.get_data()
-                dp = self.itr.next()
+                dp = next(self.itr)
 
             cnt += 1
             yield dp
@@ -566,7 +566,8 @@ class CacheData(ProxyDataFlow):
 
     def get_data(self):
         if len(self.buffer):
-            self.rng.shuffle(self.buffer)
+            if self.shuffle:
+                self.rng.shuffle(self.buffer)
             for dp in self.buffer:
                 yield dp
         else:
@@ -577,7 +578,7 @@ class CacheData(ProxyDataFlow):
 
 class PrintData(ProxyDataFlow):
     """
-    Behave like an identity mapping but print shapes of produced datapoints once during construction.
+    Behave like an identity mapping but print shape and range of the first datapoint once during construction.
 
     Attributes:
         label (str): label to identify the data when using this debugging on multiple places.

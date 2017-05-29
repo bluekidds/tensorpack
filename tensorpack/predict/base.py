@@ -10,7 +10,7 @@ import six
 from ..utils import logger
 from ..utils.develop import deprecated
 from ..utils.argtools import memoized
-from ..utils.naming import SUMMARY_BACKUP_KEYS
+from ..utils.naming import TOWER_FREEZE_KEYS
 from ..tfutils import get_tensors_by_names, TowerContext, get_op_tensor_name
 from ..tfutils.collection import freeze_collection
 
@@ -137,7 +137,7 @@ class OfflinePredictor(OnlinePredictor):
         self.graph = config._maybe_create_graph()
         with self.graph.as_default():
             input_placehdrs = config.model.get_reused_placehdrs()
-            with TowerContext('', False):
+            with TowerContext('', is_training=False):
                 config.model.build_graph(input_placehdrs)
 
             input_tensors = get_tensors_by_names(config.input_names)
@@ -186,10 +186,10 @@ class PredictorTowerBuilder(object):
             msg = "Building predictor graph {} on gpu={} ...".format(towername, tower)
         logger.info(msg)
         # No matter where this get called, clear any existing name scope.
+        device = '/gpu:{}'.format(tower) if tower >= 0 else '/cpu:0'
         with tf.name_scope(None),   \
-                freeze_collection(SUMMARY_BACKUP_KEYS), \
-                tf.device('/gpu:{}'.format(tower) if tower >= 0 else '/cpu:0'), \
-                TowerContext(towername, is_training=False):
+                freeze_collection(TOWER_FREEZE_KEYS), \
+                TowerContext(towername, device=device, is_training=False):
             self._fn(tower)
 
     # useful only when the placeholders don't have tower prefix

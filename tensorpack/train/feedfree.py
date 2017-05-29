@@ -5,9 +5,8 @@
 
 import tensorflow as tf
 
-from ..utils.develop import log_deprecated
 from ..tfutils.tower import TowerContext, get_current_tower_context
-from .input_data import QueueInput, FeedfreeInput
+from .input_source import QueueInput, FeedfreeInput
 
 from .base import Trainer
 
@@ -21,22 +20,22 @@ class FeedfreeTrainerBase(Trainer):
     """
     def build_train_tower(self):
         """
-        Get input tensors from `self.input_method` and build the graph.
+        Get input tensors from `self.input_source` and build the forward graph.
         """
         def f():
-            inputs = self._input_method.get_input_tensors()
-            self.model.build_graph(inputs)
+            self._input_tensors = self._input_source.get_input_tensors()
+            self.model.build_graph(self._input_tensors)
         ctx = get_current_tower_context()
-        if ctx is None:
-            with TowerContext(''):
+        if ctx is None:     # call without a context, use a default one
+            with TowerContext('', is_training=True):
                 f()
         else:
             assert ctx.is_training, ctx
             f()
 
     def _setup(self):
-        assert isinstance(self._input_method, FeedfreeInput), type(self._input_method)
-        self._input_method.setup_training(self)
+        assert isinstance(self._input_source, FeedfreeInput), type(self._input_source)
+        self._input_source.setup_training(self)
 
     def run_step(self):
         """ Simply run ``self.train_op``."""
@@ -64,11 +63,19 @@ class SingleCostFeedfreeTrainer(FeedfreeTrainerBase):
     def _get_cost_and_grad(self):
         """ get the cost and gradient"""
         self.build_train_tower()
-        cost = self.model.get_cost()
-        opt = self.config.optimizer
+        cost = self.model.get_cost()    # assume single cost
+        # opt may be created under first-tower variable scope (which is '')
+        opt = self.model.get_optimizer()
         # GATE_NONE faster?
+        varlist = tf.trainable_variables()
+        ctx = get_current_tower_context()
+        if ctx is not None and ctx.has_own_variables and ctx.vs_name:
+            # only optimize w.r.t vars in this tower
+            # TODO assumption on the first-tower empty variable scope
+            varlist = [v for v in varlist if v.op.name.startswith(ctx.vs_name + '/')]
         grads = opt.compute_gradients(
             cost,
+            var_list=varlist,
             gate_gradients=tf.train.Optimizer.GATE_NONE,
             colocate_gradients_with_ops=True)
         return cost, grads
@@ -83,25 +90,26 @@ class SimpleFeedfreeTrainer(SingleCostFeedfreeTrainer):
     def __init__(self, config):
         """
         Args:
-            config (TrainConfig): ``config.data`` must exist and is a
-                :class:`FeedfreeInput`.
+            config (TrainConfig): ``config.data`` must exist and is a :class:`FeedfreeInput`.
         """
-        self._input_method = config.data
-        assert isinstance(self._input_method, FeedfreeInput), self._input_method
+        self._input_source = config.data
+        assert isinstance(self._input_source, FeedfreeInput), self._input_source
         super(SimpleFeedfreeTrainer, self).__init__(config)
         assert len(self.config.tower) == 1, \
-            "SimpleFeedfreeTrainer doesn't support multigpu!"
+            "Got nr_tower={}, but doesn't support multigpu!" \
+            " Use Sync/AsyncMultiGPUTrainer instead.".format(len(self.config.tower))
 
     def _setup(self):
         super(SimpleFeedfreeTrainer, self)._setup()
         with TowerContext('', is_training=True):
             cost, grads = self._get_cost_and_grad()
-        self.train_op = self.config.optimizer.apply_gradients(grads, name='min_op')
+        opt = self.model.get_optimizer()
+        self.train_op = opt.apply_gradients(grads, name='min_op')
         # skip training
-        # self.train_op = tf.group(*self.dequed_inputs)
+        # self.train_op = tf.group(*self._input_tensors)
 
 
-def QueueInputTrainer(config, input_queue=None, predict_tower=None):
+def QueueInputTrainer(config, input_queue=None):
     """
     A wrapper trainer which automatically wraps ``config.dataflow`` by a
     :class:`QueueInput`.
@@ -117,10 +125,8 @@ def QueueInputTrainer(config, input_queue=None, predict_tower=None):
     else:
         assert isinstance(config.data, QueueInput), config.data
 
-    if predict_tower is not None:
-        log_deprecated("Argument `predict_tower` in trainer", "Use TrainConfig(predict_tower=...) instead!")
-        config.predict_tower = predict_tower
-    assert len(config.tower) == 1, \
-        "Got nr_tower={}, but QueueInputTrainer doesn't support multigpu!" \
-        " Use Sync/AsyncMultiGPUTrainer instead.".format(len(config.tower))
+    # debug
+    # from tensorpack.train.input_source import StagingInputWrapper, DummyConstantInput
+    # config.data = StagingInputWrapper(config.data, ['/gpu:0'])
+    # config.data = DummyConstantInput([[128,224,224,3], [128]])
     return SimpleFeedfreeTrainer(config)
