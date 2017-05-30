@@ -90,6 +90,7 @@ class DistributedReplicatedTrainer(SingleCostFeedfreeTrainer):
             logger.info("Running ps {}".format(self.task_index))
             self.server.join()
             return
+        opt = self.model.get_optimizer()    # in global scope, not local
         with tf.variable_scope(
                 tf.get_variable_scope(),
                 custom_getter=OverrideToLocalVariableIfNotPsVar()):
@@ -126,7 +127,6 @@ class DistributedReplicatedTrainer(SingleCostFeedfreeTrainer):
                 new_tower_grads.append((grad, new_v))
 
         # apply gradients TODO do this for each variable separately?
-        opt = self.model.get_optimizer()
         apply_gradient_op = opt.apply_gradients(new_tower_grads)
         barrier = self.add_sync_queues_and_barrier('replicate_variable', [apply_gradient_op])
         var_update_ops = []
@@ -145,6 +145,7 @@ class DistributedReplicatedTrainer(SingleCostFeedfreeTrainer):
     def setup(self):
         with tf.device(self.param_server_device):
             gs = get_global_step_var()
+            opt = self.model.get_optimizer()    # in global scope, not local
         assert isinstance(self._input_source, FeedfreeInput), type(self._input_source)
         self._input_source.setup_training(self)
 
@@ -153,16 +154,9 @@ class DistributedReplicatedTrainer(SingleCostFeedfreeTrainer):
         self.monitors = Monitors(self.monitors)
         self.register_callback(self.monitors)
         describe_model()
-        # some final operations that might modify the graph
         logger.info("Setup callbacks graph ...")
-
-        #if not self.is_chief:
-            #self._callbacks = [ProgressBar()]
         self._callbacks = Callbacks(self._callbacks)
         self._callbacks.setup_graph(weakref.proxy(self))
-
-        #local_init_op = tf.local_variables_initializer()
-        global_init_op = tf.global_variables_initializer()
 
         logger.info("Finalize the graph, create the session ...")
 
